@@ -1,0 +1,5 @@
+{
+  "name": "context-rings",
+  "owner": { "name": "Sravan" },
+  "plugins": [{ "name": "context-rings", "source": "./" }]
+}
