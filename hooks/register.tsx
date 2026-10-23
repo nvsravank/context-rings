@@ -5,8 +5,10 @@ import type { Ring, Sub } from '../types'
 import {
   K,
   baseName,
+  PULSE_MS,
   cacheInfo,
-  cacheState,
+  cacheToast,
+  cacheWarning,
   capRings,
   fmt,
   glyph,
@@ -45,11 +47,11 @@ const c = { ok: 'success', warn: 'warning', bad: 'error', chip: 'suggestion' } a
 // --- preferences: a change reloads the module, so register sets them again ---
 let main: Scale = { limit: 1000 * K, yellow: 50, red: 80 }
 let sub: Scale = { limit: 500 * K, yellow: 75, red: 90 }
-let warn: CacheWarn = { hour: 10 * 60 * 1000, fiveMin: 60 * 1000 }
+let warn: CacheWarn = { hour: 10 * 60 * 1000, fiveMin: 60 * 1000, minTokens: 500 * K }
 
 const rings = atom({ plugin: 'context-rings', key: 'rings' } as const, [])
 const folder = atom({ plugin: 'context-rings', key: 'folder' } as const, '')
-// Flips each second while a ring flashes; only the terminal reads it (the SVG animates itself).
+// Flips each second while a ring pulses; only the terminal reads it (the SVG animates itself).
 const blink = atom({ plugin: 'context-rings', key: 'blink' } as const, false)
 
 type Live = { pid: number; sessionId: string; cwd: string; name?: string; status?: string; updatedAt: number }
@@ -154,15 +156,29 @@ async function savedTitle($: Engine, mainPath: string, sessionId: string): Promi
 async function alertSubs($: Engine, subs: readonly { ring: Ring; sub: Sub; mtime: number }[], now: number) {
   // A toast when a subagent's dot turns red.
   const due = subs.filter(s => now - s.mtime < SUB_ACTIVE_MS && pctOf(s.sub.tokens, sub) >= sub.red)
+  await toastOnce(
+    $,
+    due.map(({ ring, sub: s }) => ({ key: s.id, text: `⚠ ${ring.name} › ${s.name}: ${fmt(s.tokens)} of its ${fmt(sub.limit)} limit` })),
+    now,
+  )
+}
+
+async function alertCaches($: Engine, all: readonly Ring[], now: number) {
+  // A toast when a session's cache warning starts: once per session per cache lifetime.
+  const due = all.filter(r => r.cache === 'warn')
+  await toastOnce($, due.map(r => ({ key: `cache:${r.id}:${r.cacheWarnAt}`, text: cacheToast(r, now) })), now)
+}
+
+async function toastOnce($: Engine, due: readonly { key: string; text: string }[], now: number) {
   if (due.length === 0) return
-  // Every open session runs this: the shared store says which subagents were already toasted.
+  // Every open session runs this: the shared store says what was already toasted.
   const alerted = ((await $.store.get('alerted')) ?? {}) as Record<string, number>
   let isChanged = false
-  for (const { ring, sub: s } of due) {
-    if (alerted[s.id]) continue
-    alerted[s.id] = now
+  for (const { key, text } of due) {
+    if (alerted[key]) continue
+    alerted[key] = now
     isChanged = true
-    $.ui.toast(`⚠ ${ring.name} › ${s.name}: ${fmt(s.tokens)} of its ${fmt(sub.limit)} limit`, { timeoutMs: 8000 })
+    $.ui.toast(text, { timeoutMs: 8000 })
   }
   if (!isChanged) return
   for (const [id, at] of Object.entries(alerted)) if (now - at > 24 * RECENT_MS) delete alerted[id]
@@ -200,7 +216,7 @@ async function refresh($: Engine) {
     const cacheAt = seen?.cacheAt ?? 0
     out.push({
       id, name, cwd, tokens: seen?.tokens ?? 0, isLive: !!l, isBusy, isCurrent, lastAt, subs: [],
-      cacheTtl, cacheAt, cache: isBusy ? 'warm' : cacheState(cacheTtl, cacheAt, warn, now),
+      cacheTtl, cacheAt, ...cacheFields(isBusy ? undefined : cacheWarning(cacheTtl, cacheAt, seen?.tokens ?? 0, warn, now)),
     })
   }
 
@@ -219,6 +235,7 @@ async function refresh($: Engine) {
 
   out.sort((a, b) => b.lastAt - a.lastAt)
   await alertSubs($, subRows, now)
+  await alertCaches($, out, now)
 
   // Keep names of sessions seen lately, so a closed one still has its title.
   const keep = Object.fromEntries(Object.entries(known).filter(([id]) => ids.has(id)).slice(-200))
@@ -226,7 +243,16 @@ async function refresh($: Engine) {
 
   const prev = await read($, rings)
   if (JSON.stringify(prev) !== JSON.stringify(out)) await update($, rings, () => out)
-  if (out.some(r => r.cache === 'warn')) startBlink($)
+  if (out.some(r => isPulsing(r, now))) startBlink($)
+}
+
+function cacheFields(w: ReturnType<typeof cacheWarning> | undefined) {
+  // A working session's cache is being refreshed as it goes.
+  return w ? { cache: w.cache, cacheWarnAt: w.warnAt, cacheArc: w.arc } : { cache: 'warm' as const, cacheWarnAt: 0, cacheArc: 0 }
+}
+
+function isPulsing(r: Ring, now: number): boolean {
+  return r.cache === 'warn' && now - r.cacheWarnAt < PULSE_MS
 }
 
 let blinkTimer: { cancel: () => void } | null = null
@@ -235,7 +261,8 @@ function startBlink($: Engine) {
   const tick = () => {
     blinkTimer = $.clock.after(1000, () => {
       void (async () => {
-        if (!(await read($, rings)).some(r => r.cache === 'warn')) {
+        const now = await $.clock.now()
+        if (!(await read($, rings)).some(r => isPulsing(r, now))) {
           blinkTimer = null
           await update($, blink, () => false)
           return
@@ -271,7 +298,11 @@ async function cycleFolder($: Engine) {
 export const register: Register = (on, options) => {
   main = { limit: parseSize(options.contextWindow, 1000 * K), yellow: parsePct(options.mainYellow, 50), red: parsePct(options.mainRed, 80) }
   sub = { limit: parseSize(options.subagentLimit, 500 * K), yellow: parsePct(options.subagentYellow, 75), red: parsePct(options.subagentRed, 90) }
-  warn = { hour: parseWait(options.cacheWarnHour, 10 * 60 * 1000), fiveMin: parseWait(options.cacheWarnFiveMin, 60 * 1000) }
+  warn = {
+    hour: parseWait(options.cacheWarnHour, 10 * 60 * 1000),
+    fiveMin: parseWait(options.cacheWarnFiveMin, 60 * 1000),
+    minTokens: options.cacheWarnMin === 'Any' ? 0 : parseSize(options.cacheWarnMin, 500 * K),
+  }
 
   on('session.start', async ($, e, next) => {
     void refresh($).catch(() => undefined)
@@ -325,8 +356,9 @@ export const register: Register = (on, options) => {
           const pct = pctOf(r.tokens, main)
           return (
             <Box key={r.id} marginLeft={1} hover={{ scope: scope(r) }}>
-              <Text color={c[level(pct, main)]} dimColor={!r.isLive} bold={r.isCurrent} inverse={r.cache === 'warn' && isBlinkOn}>
+              <Text color={c[level(pct, main)]} dimColor={!r.isLive} bold={r.isCurrent} inverse={isPulsing(r, now) && isBlinkOn}>
                 {glyph(pct)}
+                {r.cache === 'warn' ? '⧗' : ''}
                 {r.subs.map(s => (level(pctOf(s.tokens, sub), sub) === 'bad' ? '•' : '·')).join('')}
               </Text>
             </Box>
