@@ -13,11 +13,13 @@ tokens used and whether it is working, idle or closed.
 - **After `/compact`.** The ring drops to the compacted size right away, before
   the next reply reports the real one.
 - **Subagents.** A subagent appears as a small dot after its session's ring
-  only once it reaches the yellow line of the subagent limit (75% of 200K by
+  only once it reaches the yellow line of the subagent limit (75% of 500K by
   default), and only while it is active. When it reaches red (90%) you get a
   single toast, shared across all your open sessions.
-- **Folders.** The chip at the start of the row reads **All**; click it to step
-  through each folder's sessions and back.
+- **Up to ten rings.** Past ten, the least recent sessions fold into a `+N`;
+  point at it to see their names. This session's ring always shows.
+- **This folder.** The chip at the start of the row reads **All**; click it to
+  show only the sessions in this session's folder, and again to go back.
 
 On the terminal the rings are drawn as `○ ◔ ◑ ◕ ●`.
 
@@ -38,7 +40,7 @@ Each is a row in the mod's settings in `/config`.
 | Session context window | 1M | 100K to 1M |
 | Session ring turns yellow at | 50% | 30% to 90% |
 | Session ring turns red at | 80% | 50% to 95% |
-| Subagent limit | 200K | 100K to 1M |
+| Subagent limit | 500K | 100K to 1M |
 | Subagent dot appears (yellow) at | 75% | 30% to 90% |
 | Subagent dot turns red (and toasts) at | 90% | 50% to 95% |
 

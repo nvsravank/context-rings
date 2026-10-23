@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { fmt, lastContextTokens, level, parsePct, parseSize, parseStat, ringLabel, ringSvg, splitTail } from '../hooks/parse'
+import { capRings, fmt, lastContextTokens, level, parsePct, parseSize, parseStat, ringLabel, ringSvg, ringsSvg, splitTail } from '../hooks/parse'
 
 const SID = '0123abcd-0123-4567-89ab-0123456789ab'
 
@@ -56,4 +56,19 @@ test('a compaction after the last response counts as its postTokens', async () =
   const boundary = JSON.stringify({ type: 'system', subtype: 'compact_boundary', compactMetadata: { preTokens: 883090, postTokens: 12746 } })
   expect(lastContextTokens(`${usage}\n${boundary}\n{"type":"user"}\n`)).toBe(12746)
   expect(lastContextTokens(`${boundary}\n${usage}\n`)).toBe(880001)
+})
+
+test('past ten rings the rest fold into +N, keeping this session', async () => {
+  const ring = (i: number, isCurrent = false) => ({ id: `id-${i}`, name: `s${i}`, cwd: '/x', tokens: 0, isLive: true, isBusy: false, isCurrent, lastAt: 0, subs: [] })
+  const many = Array.from({ length: 14 }, (_, i) => ring(i, i === 12))
+  const { shown, hidden } = capRings(many)
+  expect(shown.length).toBe(10)
+  expect(hidden.length).toBe(4)
+  expect(shown[9]!.name).toBe('s12')
+  expect(hidden.some(r => r.name === 's9')).toBe(true)
+  expect(capRings(many.slice(0, 10)).hidden.length).toBe(0)
+  const scale = { limit: 1000000, yellow: 50, red: 80 }
+  const { source } = ringsSvg(shown, scale, scale, 0, hidden)
+  expect(source.includes('>+4<')).toBe(true)
+  expect(source.includes('4 more: ')).toBe(true)
 })

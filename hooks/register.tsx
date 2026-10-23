@@ -5,10 +5,12 @@ import type { Ring, Sub } from '../types'
 import {
   K,
   baseName,
+  capRings,
   fmt,
   glyph,
   lastContextTokens,
   level,
+  moreLabel,
   parsePct,
   parseSize,
   pctOf,
@@ -38,7 +40,7 @@ const c = { ok: 'success', warn: 'warning', bad: 'error', chip: 'suggestion' } a
 
 // --- preferences: a change reloads the module, so register sets them again ---
 let main: Scale = { limit: 1000 * K, yellow: 50, red: 80 }
-let sub: Scale = { limit: 200 * K, yellow: 75, red: 90 }
+let sub: Scale = { limit: 500 * K, yellow: 75, red: 90 }
 
 const rings = atom({ plugin: 'context-rings', key: 'rings' } as const, [])
 const folder = atom({ plugin: 'context-rings', key: 'folder' } as const, '')
@@ -213,26 +215,19 @@ function schedule($: Engine) {
   })
 }
 
-function folders(all: readonly Ring[]): string[] {
-  return [...new Set(all.map(r => r.cwd).filter(Boolean))]
-}
-
 let lastCycleAt = 0
-/** The chip cycles All → each folder → All. */
+/** The chip toggles All ↔ this session's folder. */
 async function cycleFolder($: Engine) {
   const now = await $.clock.now()
   if (now - lastCycleAt < 400) return
   lastCycleAt = now
-  const list = folders(await read($, rings))
-  await update($, folder, cur => {
-    const i = list.indexOf(cur)
-    return i + 1 < list.length ? list[i + 1]! : ''
-  })
+  const here = (await read($, rings)).find(r => r.isCurrent)?.cwd ?? ''
+  await update($, folder, cur => (cur || !here ? '' : here))
 }
 
 export const register: Register = (on, options) => {
   main = { limit: parseSize(options.contextWindow, 1000 * K), yellow: parsePct(options.mainYellow, 50), red: parsePct(options.mainRed, 80) }
-  sub = { limit: parseSize(options.subagentLimit, 200 * K), yellow: parsePct(options.subagentYellow, 75), red: parsePct(options.subagentRed, 90) }
+  sub = { limit: parseSize(options.subagentLimit, 500 * K), yellow: parsePct(options.subagentYellow, 75), red: parsePct(options.subagentRed, 90) }
 
   on('session.start', async ($, e, next) => {
     void refresh($).catch(() => undefined)
@@ -256,7 +251,7 @@ export const register: Register = (on, options) => {
     const all = await read($, rings)
     if (e.props.hasSurvey || all.length === 0) return next(e)
     const picked = await read($, folder)
-    const shown = picked ? all.filter(r => r.cwd === picked) : all
+    const { shown, hidden } = capRings(picked ? all.filter(r => r.cwd === picked) : all)
     const now = await $.clock.now()
     const ui = $.ui.resolve(e)
     const { Box, Text, Button } = ui
@@ -265,12 +260,12 @@ export const register: Register = (on, options) => {
     // Desktop: one interactive SVG; pointing at a ring reveals its label inside it (CSS :hover).
     if (e.surface !== 'terminal' && 'Svg' in ui) {
       const { Svg } = ui
-      const svg = ringsSvg(shown, main, sub, now)
+      const svg = ringsSvg(shown, main, sub, now, hidden)
       return (
         <Box flexDirection="row" alignItems="center">
           {chip}
           <Box marginLeft={1}>
-            <Svg source={svg.source} width={svg.width} height={svg.height} isInteractive alt={`${shown.length} sessions' context`} />
+            <Svg source={svg.source} width={svg.width} height={svg.height} isInteractive alt={`${shown.length + hidden.length} sessions' context`} />
           </Box>
         </Box>
       )
@@ -292,6 +287,18 @@ export const register: Register = (on, options) => {
             </Box>
           )
         })}
+        {hidden.length > 0 && (
+          <Box key="more" marginLeft={1} hover={{ scope: 'ring-more' }}>
+            <Text dimColor>+{hidden.length}</Text>
+          </Box>
+        )}
+        {hidden.length > 0 && (
+          <Box key="label-more" marginLeft={2} flexShrink={1} display="none" hover={{ scope: 'ring-more', display: 'flex' }}>
+            <Text dimColor wrap="truncate-end">
+              {moreLabel(hidden)}
+            </Text>
+          </Box>
+        )}
         {shown.map(r => (
           <Box key={`label-${r.id}`} marginLeft={2} flexShrink={1} display="none" hover={{ scope: scope(r), display: 'flex' }}>
             <Text dimColor wrap="truncate-end">
