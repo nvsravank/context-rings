@@ -1,7 +1,7 @@
 {
   "name": "context-rings",
   "displayName": "Context Rings",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A ring per active session above the prompt, filled by how much of its context window is used; newest activity first, hover for the name",
   "author": {
     "name": "Sravan",
@@ -46,7 +46,7 @@
       "title": "Subagent limit",
       "description": "The limit a subagent's dot is measured against.",
       "options": ["100K", "200K", "300K", "400K", "500K", "600K", "700K", "800K", "900K", "1M"],
-      "default": "200K"
+      "default": "500K"
     },
     "subagentYellow": {
       "type": "string",

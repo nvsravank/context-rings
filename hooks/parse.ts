@@ -184,16 +184,43 @@ function esc(text: string): string {
 // Room for the hover label after the rings, in CSS pixels.
 const LABEL_W = 640
 
+// Most rings shown in the row; the rest fold into a "+N".
+export const MAX_RINGS = 10
+
+/**
+ * The first `max` rings (most recent first) and the rest. This session's ring
+ * always shows: when it is past the cap it takes the last place.
+ */
+export function capRings(rings: readonly Ring[], max = MAX_RINGS): { shown: Ring[]; hidden: Ring[] } {
+  if (rings.length <= max) return { shown: [...rings], hidden: [] }
+  const shown = rings.slice(0, max)
+  const current = rings.slice(max).find(r => r.isCurrent)
+  if (current) shown[max - 1] = current
+  return { shown, hidden: rings.filter(r => !shown.includes(r)) }
+}
+
+/** What hovering the "+N" reveals: the names of the folded sessions. */
+export function moreLabel(hidden: readonly Ring[]): string {
+  return `${hidden.length} more: ${hidden.map(r => r.name).join(', ')}`
+}
+
 /**
  * Every ring in one interactive SVG. Pointing at a ring reveals its label,
  * drawn in the same SVG after the last ring, by CSS :hover inside the frame.
  */
-export function ringsSvg(rings: readonly Ring[], main: Scale, sub: Scale, now: number): { source: string; width: number; height: number } {
+export function ringsSvg(
+  rings: readonly Ring[],
+  main: Scale,
+  sub: Scale,
+  now: number,
+  hidden: readonly Ring[] = [],
+): { source: string; width: number; height: number } {
   let x = 0
   const groups: string[] = []
   const pieces = rings.map(r => ringSvg(r, main, sub))
   pieces.forEach(p => (x += p.width + 6))
-  const labelX = x + 6
+  const moreW = hidden.length ? 8 * String(hidden.length).length + 16 : 0
+  const labelX = x + moreW + 6
   x = 0
   rings.forEach((r, i) => {
     const p = pieces[i]!
@@ -205,9 +232,17 @@ export function ringsSvg(rings: readonly Ring[], main: Scale, sub: Scale, now: n
     )
     x += p.width + 6
   })
+  if (hidden.length) {
+    groups.push(
+      `<g class="r"><rect x="${x}" y="0" width="${moreW}" height="${RING}" fill="transparent"/>` +
+        `<text class="m" x="${x}" y="${RING / 2 + 4}">+${hidden.length}</text>` +
+        `<text class="l" x="${labelX}" y="${RING / 2 + 4}">${esc(moreLabel(hidden))}</text></g>`,
+    )
+  }
   const width = labelX + LABEL_W
   const style =
     `<style>.l{visibility:hidden;font:12px -apple-system,system-ui,sans-serif;fill:#8b949e}` +
+    `.m{font:12px -apple-system,system-ui,sans-serif;fill:#8b949e}` +
     `.r:hover .l{visibility:visible}.r{cursor:default}</style>`
   return {
     source: `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${RING}" viewBox="0 0 ${width} ${RING}">${style}${groups.join('')}</svg>`,
