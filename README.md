@@ -5,8 +5,10 @@ is, as a row of rings above the prompt. The session you were active in most
 recently comes first. Point at a ring to see the session's name, folder,
 tokens used and whether it is working, idle or closed.
 
-- **One ring per session.** A session shows while its process is running, and
-  stays (faded) for an hour after it closes, matching the prompt cache.
+- **One ring per session.** A session shows for an hour after its last
+  message, matching the prompt cache, and fades once its process closes.
+  Opening an old session without sending anything doesn't bring it back.
+  This session, and any session that's working, always shows.
 - **Fill and color.** A ring fills against your context window (1M by default)
   and turns yellow, then red, at the percentages you choose (50% and 80% by
   default). A working session's ring pulses; this session's has a dot.
@@ -16,6 +18,11 @@ tokens used and whether it is working, idle or closed.
   only once it reaches the yellow line of the subagent limit (75% of 500K by
   default), and only while it is active. When it reaches red (90%) you get a
   single toast, shared across all your open sessions.
+- **Cache about to expire.** Each reply records whether its prompt cache lives
+  1 hour or 5 minutes. A ring flashes when its session's cache is close to
+  running out (10 minutes before for a 1-hour cache, 1 minute for 5 minutes),
+  so you can reply or `/compact` before the next message resends everything.
+  Hovering shows the time left, or how long ago it expired.
 - **Up to ten rings.** Past ten, the least recent sessions fold into a `+N`;
   point at it to see their names. This session's ring always shows.
 - **This folder.** The chip at the start of the row reads **All**; click it to
@@ -43,6 +50,8 @@ Each is a row in the mod's settings in `/config`.
 | Subagent limit | 500K | 100K to 1M |
 | Subagent dot appears (yellow) at | 75% | 30% to 90% |
 | Subagent dot turns red (and toasts) at | 90% | 50% to 95% |
+| 1-hour cache: flash before it expires | 10m | Off, 5m to 30m |
+| 5-minute cache: flash before it expires | 1m | Off, 30s to 2m |
 
 ## What it runs and changes
 
@@ -56,7 +65,7 @@ What it reads, every 5 seconds and after each turn:
 | What | Why |
 | --- | --- |
 | `~/.claude/sessions/*.json` | Which sessions are running, their names, folders and whether they are working |
-| `~/.claude/projects/**/*.jsonl` (the last 1 MB of each changed in the last hour) | The context size the last reply or compaction reported |
+| `~/.claude/projects/**/*.jsonl` (the last 1 MB of each changed in the last hour) | The context size the last reply or compaction reported, when the last message and reply came, and the prompt cache's lifetime |
 | `~/.claude/projects/**/custom-title.json`, `subagents/*.meta.json` | Session titles and subagent descriptions |
 
 What it runs (read-only, no shell except the first):
