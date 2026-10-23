@@ -101,6 +101,79 @@ export function lastContextTokens(text: string): number | undefined {
   return undefined
 }
 
+/**
+ * When the last message, yours or the model's, was written: the newest
+ * timestamped user or assistant row. Opening a session in the app appends
+ * rows of its own (mode, title) without timestamps, so they do not count.
+ * Undefined when the tail holds none.
+ */
+export function lastMessageAt(text: string): number | undefined {
+  const lines = text.split('\n')
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]!
+    if (!line.includes('"timestamp"') || !/"type":"(user|assistant)"/.test(line)) continue
+    try {
+      const row = JSON.parse(line)
+      if (row?.type !== 'user' && row?.type !== 'assistant') continue
+      const at = Date.parse(row.timestamp)
+      if (!Number.isNaN(at)) return at
+    } catch {
+      // The tail's first line is usually cut mid-row.
+    }
+  }
+  return undefined
+}
+
+/**
+ * The prompt cache the last replies wrote: its lifetime, from the newest reply
+ * that wrote any (1h or 5m), and when the last reply came, which restarts it.
+ * Each is undefined when the tail does not say.
+ */
+export function cacheInfo(text: string): { ttl?: number; at?: number } {
+  const out: { ttl?: number; at?: number } = {}
+  const lines = text.split('\n')
+  for (let i = lines.length - 1; i >= 0 && (out.ttl === undefined || out.at === undefined); i--) {
+    const line = lines[i]!
+    if (!line.includes('"usage"') || !line.includes('"assistant"')) continue
+    try {
+      const row = JSON.parse(line)
+      if (row?.message?.role !== 'assistant') continue
+      const at = Date.parse(row.timestamp)
+      if (out.at === undefined && !Number.isNaN(at)) out.at = at
+      const made = row.message.usage?.cache_creation
+      if (out.ttl === undefined && made) {
+        if (made.ephemeral_1h_input_tokens > 0) out.ttl = HOUR
+        else if (made.ephemeral_5m_input_tokens > 0) out.ttl = 5 * MINUTE
+      }
+    } catch {
+      // The tail's first line is usually cut mid-row.
+    }
+  }
+  return out
+}
+
+const MINUTE = 60 * 1000
+const HOUR = 60 * MINUTE
+
+/** "10m" → 600000, "30s" → 30000, "Off" → 0; anything else → fallback. */
+export function parseWait(text: unknown, fallback: number): number {
+  if (text === 'Off') return 0
+  const m = typeof text === 'string' ? /^(\d+)([sm])$/.exec(text) : null
+  return m ? Number(m[1]) * (m[2] === 'm' ? MINUTE : 1000) : fallback
+}
+
+/** How long before each cache lifetime runs out its ring flashes; 0 is off. */
+export type CacheWarn = { hour: number; fiveMin: number }
+
+/** Warm, about to expire (the ring flashes), expired, or not known. */
+export function cacheState(ttl: number | undefined, at: number | undefined, warn: CacheWarn, now: number): Ring['cache'] {
+  if (!ttl || !at) return 'none'
+  const left = at + ttl - now
+  if (left <= 0) return 'cold'
+  const lead = ttl >= HOUR ? warn.hour : warn.fiveMin
+  return lead > 0 && left <= lead ? 'warn' : 'warm'
+}
+
 /** Five fill steps for the terminal, where there is no SVG. */
 export function glyph(pct: number): string {
   if (pct < 12.5) return '○'
@@ -143,7 +216,19 @@ export function ringLabel(r: Ring, main: Scale, now: number): string {
   const pct = pctOf(r.tokens, main)
   const state = r.isLive ? (r.isBusy ? 'working' : 'idle') : `closed ${ago(now - r.lastAt)}`
   const subs = r.subs.map(s => `${s.name} ${fmt(s.tokens)}`).join(', ')
-  return `${r.name} · ${baseName(r.cwd)} · ${fmt(r.tokens)} of ${fmt(main.limit)} (${Math.round(pct)}%) · ${state}${r.isCurrent ? ' · this session' : ''}${subs ? ` · subagents: ${subs}` : ''}`
+  return `${r.name} · ${baseName(r.cwd)} · ${fmt(r.tokens)} of ${fmt(main.limit)} (${Math.round(pct)}%) · ${state}${cacheText(r, now)}${r.isCurrent ? ' · this session' : ''}${subs ? ` · subagents: ${subs}` : ''}`
+}
+
+function cacheText(r: Ring, now: number): string {
+  if (r.cache === 'none' || !r.cacheTtl) return ''
+  const left = r.cacheAt + r.cacheTtl - now
+  const life = r.cacheTtl >= HOUR ? '1h' : '5m'
+  return left > 0 ? ` · ${life} cache, ${until(left)} left` : ` · ${life} cache expired ${ago(-left)}`
+}
+
+function until(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000))
+  return s < 60 ? `${s}s` : `${Math.round(s / 60)}m`
 }
 
 /** One session's ring, with its subagents' dots after it. */
@@ -155,6 +240,7 @@ export function ringSvg(r: Ring, main: Scale, sub: Scale): { source: string; wid
   const len = 2 * Math.PI * rad
   const parts = [
     `<g opacity="${r.isLive ? 1 : 0.4}">`,
+    r.cache === 'warn' ? `<animate attributeName="opacity" values="1;0.2;1" dur="1s" repeatCount="indefinite"/>` : '',
     `<circle cx="${c}" cy="${c}" r="${rad}" fill="none" stroke="#8b949e" stroke-opacity="0.3" stroke-width="3"/>`,
     `<circle cx="${c}" cy="${c}" r="${rad}" fill="none" stroke="${color}" stroke-width="3" stroke-linecap="round"` +
       ` stroke-dasharray="${((len * pct) / 100).toFixed(2)} ${len.toFixed(2)}" transform="rotate(-90 ${c} ${c})"/>`,

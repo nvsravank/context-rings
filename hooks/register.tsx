@@ -5,28 +5,32 @@ import type { Ring, Sub } from '../types'
 import {
   K,
   baseName,
+  cacheInfo,
+  cacheState,
   capRings,
   fmt,
   glyph,
   lastContextTokens,
+  lastMessageAt,
   level,
   moreLabel,
   parsePct,
   parseSize,
   pctOf,
   parseStat,
+  parseWait,
   projectDir,
   ringLabel,
   ringsSvg,
   splitTail,
 } from './parse'
-import type { Scale, TranscriptFile } from './parse'
+import type { CacheWarn, Scale, TranscriptFile } from './parse'
 
 type Engine = EngineInterface
 
 // How often every session's files are read again.
 const POLL_MS = 5000
-// A closed session stays (dimmed) this long after its last activity: the prompt cache's hour.
+// A session shows this long after its last message, running or not: the prompt cache's hour.
 const RECENT_MS = 60 * 60 * 1000
 // A subagent whose transcript has not moved in this long is taken as finished.
 const SUB_ACTIVE_MS = 10 * 60 * 1000
@@ -41,15 +45,18 @@ const c = { ok: 'success', warn: 'warning', bad: 'error', chip: 'suggestion' } a
 // --- preferences: a change reloads the module, so register sets them again ---
 let main: Scale = { limit: 1000 * K, yellow: 50, red: 80 }
 let sub: Scale = { limit: 500 * K, yellow: 75, red: 90 }
+let warn: CacheWarn = { hour: 10 * 60 * 1000, fiveMin: 60 * 1000 }
 
 const rings = atom({ plugin: 'context-rings', key: 'rings' } as const, [])
 const folder = atom({ plugin: 'context-rings', key: 'folder' } as const, '')
+// Flips each second while a ring flashes; only the terminal reads it (the SVG animates itself).
+const blink = atom({ plugin: 'context-rings', key: 'blink' } as const, false)
 
 type Live = { pid: number; sessionId: string; cwd: string; name?: string; status?: string; updatedAt: number }
 type Known = { name?: string; cwd?: string }
 
 let configDir = ''
-const tokensByPath = new Map<string, { mtime: number; tokens: number; cwd?: string }>()
+const tokensByPath = new Map<string, { mtime: number; tokens: number; msgAt?: number; cacheTtl?: number; cacheAt?: number; cwd?: string }>()
 const subNames = new Map<string, string>()
 
 async function findConfigDir($: Engine): Promise<string> {
@@ -107,8 +114,16 @@ async function readTokens($: Engine, files: readonly TranscriptFile[]) {
     for (const f of batch) {
       const text = texts.get(f.path) ?? ''
       const before = tokensByPath.get(f.path)
+      const cache = cacheInfo(text)
       const cwd = /"cwd":"([^"]+)"/.exec(text)?.[1]
-      tokensByPath.set(f.path, { mtime: f.mtime, tokens: lastContextTokens(text) ?? before?.tokens ?? 0, cwd: cwd ?? before?.cwd })
+      tokensByPath.set(f.path, {
+        mtime: f.mtime,
+        tokens: lastContextTokens(text) ?? before?.tokens ?? 0,
+        msgAt: lastMessageAt(text) ?? before?.msgAt,
+        cacheTtl: cache.ttl ?? before?.cacheTtl,
+        cacheAt: cache.at ?? before?.cacheAt,
+        cwd: cwd ?? before?.cwd,
+      })
     }
   }
 }
@@ -172,13 +187,21 @@ async function refresh($: Engine) {
     const l = liveById.get(id)
     const f = mains.get(id)
     const seen = f ? tokensByPath.get(f.path) : undefined
-    const lastAt = Math.max(f?.mtime ?? 0, l?.updatedAt ?? 0)
-    if (!l && now - lastAt > RECENT_MS) continue
+    // The last message, not the file's time: opening a session writes to it and starts its process.
+    const lastAt = f ? (seen?.msgAt ?? 0) : (l?.updatedAt ?? 0)
+    const isCurrent = id === currentId
+    const isBusy = l?.status === 'busy'
+    if (!isCurrent && !isBusy && now - lastAt > RECENT_MS) continue
     const cwd = l?.cwd || seen?.cwd || known[id]?.cwd || ''
     const name =
       l?.name || (f ? await savedTitle($, f.path, id) : undefined) || known[id]?.name || `${baseName(cwd) || 'session'} · ${id.slice(0, 8)}`
     known[id] = { name, cwd }
-    out.push({ id, name, cwd, tokens: seen?.tokens ?? 0, isLive: !!l, isBusy: l?.status === 'busy', isCurrent: id === currentId, lastAt, subs: [] })
+    const cacheTtl = seen?.cacheTtl ?? 0
+    const cacheAt = seen?.cacheAt ?? 0
+    out.push({
+      id, name, cwd, tokens: seen?.tokens ?? 0, isLive: !!l, isBusy, isCurrent, lastAt, subs: [],
+      cacheTtl, cacheAt, cache: isBusy ? 'warm' : cacheState(cacheTtl, cacheAt, warn, now),
+    })
   }
 
   const byId = new Map(out.map(r => [r.id, r]))
@@ -203,6 +226,26 @@ async function refresh($: Engine) {
 
   const prev = await read($, rings)
   if (JSON.stringify(prev) !== JSON.stringify(out)) await update($, rings, () => out)
+  if (out.some(r => r.cache === 'warn')) startBlink($)
+}
+
+let blinkTimer: { cancel: () => void } | null = null
+function startBlink($: Engine) {
+  if (blinkTimer) return
+  const tick = () => {
+    blinkTimer = $.clock.after(1000, () => {
+      void (async () => {
+        if (!(await read($, rings)).some(r => r.cache === 'warn')) {
+          blinkTimer = null
+          await update($, blink, () => false)
+          return
+        }
+        await update($, blink, on => !on)
+        tick()
+      })().catch(() => (blinkTimer = null))
+    })
+  }
+  tick()
 }
 
 let pollTimer: { cancel: () => void } | null = null
@@ -228,6 +271,7 @@ async function cycleFolder($: Engine) {
 export const register: Register = (on, options) => {
   main = { limit: parseSize(options.contextWindow, 1000 * K), yellow: parsePct(options.mainYellow, 50), red: parsePct(options.mainRed, 80) }
   sub = { limit: parseSize(options.subagentLimit, 500 * K), yellow: parsePct(options.subagentYellow, 75), red: parsePct(options.subagentRed, 90) }
+  warn = { hour: parseWait(options.cacheWarnHour, 10 * 60 * 1000), fiveMin: parseWait(options.cacheWarnFiveMin, 60 * 1000) }
 
   on('session.start', async ($, e, next) => {
     void refresh($).catch(() => undefined)
@@ -272,6 +316,7 @@ export const register: Register = (on, options) => {
     }
 
     // Terminal: glyphs; each is a hover group that reveals its label at the row's end.
+    const isBlinkOn = await read($, blink)
     const scope = (r: Ring) => `ring-${r.id.slice(0, 20)}`
     return (
       <Box flexDirection="row" width={e.props.bodyColumns}>
@@ -280,7 +325,7 @@ export const register: Register = (on, options) => {
           const pct = pctOf(r.tokens, main)
           return (
             <Box key={r.id} marginLeft={1} hover={{ scope: scope(r) }}>
-              <Text color={c[level(pct, main)]} dimColor={!r.isLive} bold={r.isCurrent}>
+              <Text color={c[level(pct, main)]} dimColor={!r.isLive} bold={r.isCurrent} inverse={r.cache === 'warn' && isBlinkOn}>
                 {glyph(pct)}
                 {r.subs.map(s => (level(pctOf(s.tokens, sub), sub) === 'bad' ? '•' : '·')).join('')}
               </Text>

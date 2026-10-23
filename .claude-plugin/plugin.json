@@ -1,7 +1,7 @@
 {
   "name": "context-rings",
   "displayName": "Context Rings",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "A ring per active session above the prompt, filled by how much of its context window is used; newest activity first, hover for the name",
   "author": {
     "name": "Sravan",
@@ -24,43 +24,127 @@
       "type": "string",
       "title": "Session context window",
       "description": "The window each session's ring fills against.",
-      "options": ["100K", "200K", "300K", "400K", "500K", "600K", "700K", "800K", "900K", "1M"],
+      "options": [
+        "100K",
+        "200K",
+        "300K",
+        "400K",
+        "500K",
+        "600K",
+        "700K",
+        "800K",
+        "900K",
+        "1M"
+      ],
       "default": "1M"
     },
     "mainYellow": {
       "type": "string",
       "title": "Session ring turns yellow at",
       "description": "Percent of the session context window.",
-      "options": ["30%", "40%", "50%", "60%", "70%", "75%", "80%", "90%"],
+      "options": [
+        "30%",
+        "40%",
+        "50%",
+        "60%",
+        "70%",
+        "75%",
+        "80%",
+        "90%"
+      ],
       "default": "50%"
     },
     "mainRed": {
       "type": "string",
       "title": "Session ring turns red at",
       "description": "Percent of the session context window.",
-      "options": ["50%", "60%", "70%", "75%", "80%", "85%", "90%", "95%"],
+      "options": [
+        "50%",
+        "60%",
+        "70%",
+        "75%",
+        "80%",
+        "85%",
+        "90%",
+        "95%"
+      ],
       "default": "80%"
     },
     "subagentLimit": {
       "type": "string",
       "title": "Subagent limit",
       "description": "The limit a subagent's dot is measured against.",
-      "options": ["100K", "200K", "300K", "400K", "500K", "600K", "700K", "800K", "900K", "1M"],
+      "options": [
+        "100K",
+        "200K",
+        "300K",
+        "400K",
+        "500K",
+        "600K",
+        "700K",
+        "800K",
+        "900K",
+        "1M"
+      ],
       "default": "500K"
     },
     "subagentYellow": {
       "type": "string",
       "title": "Subagent dot appears (yellow) at",
       "description": "Percent of the subagent limit. Below this a subagent is not shown.",
-      "options": ["30%", "40%", "50%", "60%", "70%", "75%", "80%", "90%"],
+      "options": [
+        "30%",
+        "40%",
+        "50%",
+        "60%",
+        "70%",
+        "75%",
+        "80%",
+        "90%"
+      ],
       "default": "75%"
     },
     "subagentRed": {
       "type": "string",
       "title": "Subagent dot turns red (and toasts) at",
       "description": "Percent of the subagent limit. A toast warns once per subagent when it gets here.",
-      "options": ["50%", "60%", "70%", "75%", "80%", "85%", "90%", "95%"],
+      "options": [
+        "50%",
+        "60%",
+        "70%",
+        "75%",
+        "80%",
+        "85%",
+        "90%",
+        "95%"
+      ],
       "default": "90%"
+    },
+    "cacheWarnHour": {
+      "type": "string",
+      "title": "1-hour cache: flash before it expires",
+      "description": "How long before a session's 1-hour prompt cache runs out its ring starts flashing.",
+      "options": [
+        "Off",
+        "5m",
+        "10m",
+        "15m",
+        "20m",
+        "30m"
+      ],
+      "default": "10m"
+    },
+    "cacheWarnFiveMin": {
+      "type": "string",
+      "title": "5-minute cache: flash before it expires",
+      "description": "How long before a session's 5-minute prompt cache runs out its ring starts flashing.",
+      "options": [
+        "Off",
+        "30s",
+        "1m",
+        "2m"
+      ],
+      "default": "1m"
     }
   }
 }
