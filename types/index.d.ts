@@ -14,6 +14,9 @@ export type Ring = {
   cacheTtl: number
   cacheAt: number
   cache: 'warm' | 'warn' | 'cold' | 'none'
+  /** In the warning window: when it began, and the share of it left (the arc). */
+  cacheWarnAt: number
+  cacheArc: number
 }
 
 declare module 'claude-code' {

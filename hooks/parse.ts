@@ -162,16 +162,41 @@ export function parseWait(text: unknown, fallback: number): number {
   return m ? Number(m[1]) * (m[2] === 'm' ? MINUTE : 1000) : fallback
 }
 
-/** How long before each cache lifetime runs out its ring flashes; 0 is off. */
-export type CacheWarn = { hour: number; fiveMin: number }
+/**
+ * How long before each cache lifetime runs out its warning starts (0 is off),
+ * and the smallest session it is worth warning about.
+ */
+export type CacheWarn = { hour: number; fiveMin: number; minTokens: number }
 
-/** Warm, about to expire (the ring flashes), expired, or not known. */
-export function cacheState(ttl: number | undefined, at: number | undefined, warn: CacheWarn, now: number): Ring['cache'] {
-  if (!ttl || !at) return 'none'
+// A ring pulses this long when its warning starts, then shows the arc alone.
+export const PULSE_MS = 10 * 1000
+// The arc's steps, so a redraw comes every 1/40th of the warning window, not every poll.
+const ARC_STEPS = 40
+
+/**
+ * The cache's state for one session: warm, in its warning window (only for a
+ * session of at least `minTokens`), expired, or not known. In the window,
+ * `warnAt` is when it began and `arc` the share of it left, in steps.
+ */
+export function cacheWarning(
+  ttl: number | undefined,
+  at: number | undefined,
+  tokens: number,
+  warn: CacheWarn,
+  now: number,
+): { cache: Ring['cache']; warnAt: number; arc: number } {
+  if (!ttl || !at) return { cache: 'none', warnAt: 0, arc: 0 }
   const left = at + ttl - now
-  if (left <= 0) return 'cold'
+  if (left <= 0) return { cache: 'cold', warnAt: 0, arc: 0 }
   const lead = ttl >= HOUR ? warn.hour : warn.fiveMin
-  return lead > 0 && left <= lead ? 'warn' : 'warm'
+  if (lead <= 0 || left > lead || tokens < warn.minTokens) return { cache: 'warm', warnAt: 0, arc: 0 }
+  return { cache: 'warn', warnAt: at + ttl - lead, arc: Math.ceil((left / lead) * ARC_STEPS) / ARC_STEPS }
+}
+
+/** The toast when a session's warning starts. */
+export function cacheToast(r: Ring, now: number): string {
+  const life = r.cacheTtl >= HOUR ? '1h' : '5m'
+  return `⏳ ${r.name} · ${baseName(r.cwd)}: its ${life} cache of ${fmt(r.tokens)} expires in ${until(r.cacheAt + r.cacheTtl - now)}. A message keeps it warm; /compact first to also shrink it.`
 }
 
 /** Five fill steps for the terminal, where there is no SVG. */
@@ -208,6 +233,7 @@ export function ago(ms: number): string {
 }
 
 const HEX = { ok: '#3fb950', warn: '#d29922', bad: '#f85149' } as const
+const ORANGE = '#f0883e'
 const RING = 24
 const DOT = 8
 
@@ -232,15 +258,19 @@ function until(ms: number): string {
 }
 
 /** One session's ring, with its subagents' dots after it. */
-export function ringSvg(r: Ring, main: Scale, sub: Scale): { source: string; width: number; height: number } {
+export function ringSvg(r: Ring, main: Scale, sub: Scale, now = 0): { source: string; width: number; height: number } {
   const pct = pctOf(r.tokens, main)
   const color = HEX[level(pct, main)]
   const c = RING / 2
   const rad = 9
   const len = 2 * Math.PI * rad
+  const arcRad = 11.25
+  const arcLen = 2 * Math.PI * arcRad
+  // The pulse runs out by itself: it repeats only for what is left of its 10 seconds.
+  const pulses = r.cache === 'warn' ? Math.ceil((r.cacheWarnAt + PULSE_MS - now) / 1000) : 0
   const parts = [
     `<g opacity="${r.isLive ? 1 : 0.4}">`,
-    r.cache === 'warn' ? `<animate attributeName="opacity" values="1;0.2;1" dur="1s" repeatCount="indefinite"/>` : '',
+    pulses > 0 ? `<animate attributeName="opacity" values="1;0.2;1" dur="1s" repeatCount="${pulses}"/>` : '',
     `<circle cx="${c}" cy="${c}" r="${rad}" fill="none" stroke="#8b949e" stroke-opacity="0.3" stroke-width="3"/>`,
     `<circle cx="${c}" cy="${c}" r="${rad}" fill="none" stroke="${color}" stroke-width="3" stroke-linecap="round"` +
       ` stroke-dasharray="${((len * pct) / 100).toFixed(2)} ${len.toFixed(2)}" transform="rotate(-90 ${c} ${c})"/>`,
@@ -248,6 +278,11 @@ export function ringSvg(r: Ring, main: Scale, sub: Scale): { source: string; wid
     r.isBusy
       ? `<circle cx="${c}" cy="${c}" r="${rad}" fill="none" stroke="${color}" stroke-width="1" opacity="0.6">` +
         `<animate attributeName="r" values="${rad};${rad + 2.5};${rad}" dur="1.6s" repeatCount="indefinite"/></circle>`
+      : '',
+    // The cache's countdown: an orange arc outside the ring, shrinking to nothing at expiry.
+    r.cache === 'warn'
+      ? `<circle cx="${c}" cy="${c}" r="${arcRad}" fill="none" stroke="${ORANGE}" stroke-width="1.5" stroke-linecap="round"` +
+        ` stroke-dasharray="${(arcLen * r.cacheArc).toFixed(2)} ${arcLen.toFixed(2)}" transform="rotate(-90 ${c} ${c})"/>`
       : '',
     `</g>`,
   ]
@@ -303,7 +338,7 @@ export function ringsSvg(
 ): { source: string; width: number; height: number } {
   let x = 0
   const groups: string[] = []
-  const pieces = rings.map(r => ringSvg(r, main, sub))
+  const pieces = rings.map(r => ringSvg(r, main, sub, now))
   pieces.forEach(p => (x += p.width + 6))
   const moreW = hidden.length ? 8 * String(hidden.length).length + 16 : 0
   const labelX = x + moreW + 6

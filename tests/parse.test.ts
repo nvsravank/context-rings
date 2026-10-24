@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { cacheInfo, cacheState, capRings, fmt, lastContextTokens, lastMessageAt, level, parsePct, parseSize, parseStat, parseWait, ringLabel, ringSvg, ringsSvg, splitTail } from '../hooks/parse'
+import { cacheInfo, cacheToast, cacheWarning, capRings, fmt, lastContextTokens, lastMessageAt, level, parsePct, parseSize, parseStat, parseWait, ringLabel, ringSvg, ringsSvg, splitTail } from '../hooks/parse'
 
 const SID = '0123abcd-0123-4567-89ab-0123456789ab'
 
@@ -35,7 +35,7 @@ test('tail output splits per file', async () => {
 })
 
 test('a ring draws and its label reads', async () => {
-  const ring = { id: SID, name: 'A <b>', cwd: '/x/proj', tokens: 500000, isLive: true, isBusy: false, isCurrent: true, lastAt: 0, subs: [{ id: 's', name: 'sub', tokens: 200000 }], cacheTtl: 0, cacheAt: 0, cache: 'none' as const }
+  const ring = { id: SID, name: 'A <b>', cwd: '/x/proj', tokens: 500000, isLive: true, isBusy: false, isCurrent: true, lastAt: 0, subs: [{ id: 's', name: 'sub', tokens: 200000 }], cacheTtl: 0, cacheAt: 0, cache: 'none' as const, cacheWarnAt: 0, cacheArc: 0 }
   const { source } = ringSvg(ring, { limit: 1000000, yellow: 50, red: 80 }, { limit: 200000, yellow: 50, red: 80 })
   const label = ringLabel(ring, { limit: 1000000, yellow: 50, red: 80 }, 0)
   expect(source.includes('<circle')).toBe(true)
@@ -59,7 +59,7 @@ test('a compaction after the last response counts as its postTokens', async () =
 })
 
 test('past ten rings the rest fold into +N, keeping this session', async () => {
-  const ring = (i: number, isCurrent = false) => ({ id: `id-${i}`, name: `s${i}`, cwd: '/x', tokens: 0, isLive: true, isBusy: false, isCurrent, lastAt: 0, subs: [], cacheTtl: 0, cacheAt: 0, cache: 'none' as const })
+  const ring = (i: number, isCurrent = false) => ({ id: `id-${i}`, name: `s${i}`, cwd: '/x', tokens: 0, isLive: true, isBusy: false, isCurrent, lastAt: 0, subs: [], cacheTtl: 0, cacheAt: 0, cache: 'none' as const, cacheWarnAt: 0, cacheArc: 0 })
   const many = Array.from({ length: 14 }, (_, i) => ring(i, i === 12))
   const { shown, hidden } = capRings(many)
   expect(shown.length).toBe(10)
@@ -80,7 +80,7 @@ test('activity is the last message, not rows the app adds on opening', async () 
   expect(lastMessageAt('{"type":"mode"}\n')).toBeUndefined()
 })
 
-test('the cache lifetime comes from the last reply that wrote it, and flashes before it runs out', async () => {
+test('the cache lifetime comes from the last reply that wrote it', async () => {
   const reply = (at: string, h1: number, m5: number) =>
     JSON.stringify({ type: 'assistant', timestamp: at, message: { role: 'assistant', usage: { input_tokens: 1, cache_creation: { ephemeral_1h_input_tokens: h1, ephemeral_5m_input_tokens: m5 } } } })
   const info = cacheInfo(`${reply('2026-10-23T10:00:00Z', 500, 0)}\n${reply('2026-10-23T10:05:00Z', 0, 0)}\n{"type":"mode"}\n`)
@@ -89,14 +89,32 @@ test('the cache lifetime comes from the last reply that wrote it, and flashes be
   expect(cacheInfo(reply('2026-10-23T10:00:00Z', 0, 9)).ttl).toBe(300000)
   expect(cacheInfo('{"type":"user"}').ttl).toBeUndefined()
 
-  const warn = { hour: parseWait('10m', 0), fiveMin: parseWait('1m', 0) }
-  expect(warn).toEqual({ hour: 600000, fiveMin: 60000 })
+  expect(parseWait('10m', 0)).toBe(600000)
   expect(parseWait('Off', 5)).toBe(0)
   expect(parseWait('30s', 5)).toBe(30000)
-  expect(cacheState(3600000, 1, warn, 49 * 60000)).toBe('warm')
-  expect(cacheState(3600000, 1, warn, 51 * 60000)).toBe('warn')
-  expect(cacheState(3600000, 1, warn, 61 * 60000)).toBe('cold')
-  expect(cacheState(300000, 1, warn, 4.5 * 60000)).toBe('warn')
-  expect(cacheState(3600000, 1, { hour: 0, fiveMin: 0 }, 59 * 60000)).toBe('warm')
-  expect(cacheState(0, 1, warn, 0)).toBe('none')
+})
+
+test('the cache warning starts in its window, only for big sessions, with a shrinking arc', async () => {
+  const M = 60000
+  const warn = { hour: 10 * M, fiveMin: M, minTokens: 500000 }
+  const big = 600000
+  expect(cacheWarning(3600000, 1, big, warn, 49 * M).cache).toBe('warm')
+  const w = cacheWarning(3600000, 1, big, warn, 1 + 55 * M)
+  expect(w.cache).toBe('warn')
+  expect(w.warnAt).toBe(1 + 50 * M)
+  expect(w.arc).toBe(0.5)
+  expect(cacheWarning(3600000, 1, 100000, warn, 55 * M).cache).toBe('warm')
+  expect(cacheWarning(3600000, 1, big, warn, 61 * M).cache).toBe('cold')
+  expect(cacheWarning(300000, 1, big, warn, 4.5 * M).cache).toBe('warn')
+  expect(cacheWarning(3600000, 1, big, { ...warn, hour: 0 }, 59 * M).cache).toBe('warm')
+  expect(cacheWarning(0, 1, big, warn, 0).cache).toBe('none')
+
+  const ring = { id: SID, name: 'big job', cwd: '/x/proj', tokens: big, isLive: true, isBusy: false, isCurrent: false, lastAt: 0, subs: [], cacheTtl: 3600000, cacheAt: 1, cache: w.cache, cacheWarnAt: w.warnAt, cacheArc: w.arc }
+  expect(cacheToast(ring, 1 + 55 * M).includes('big job · proj: its 1h cache of 600K expires in 5m')).toBe(true)
+  const scale = { limit: 1000000, yellow: 50, red: 80 }
+  // Inside the first 10 seconds it pulses; after, only the arc remains.
+  expect(ringSvg(ring, scale, scale, w.warnAt + 3000).source.includes('repeatCount="7"')).toBe(true)
+  const later = ringSvg(ring, scale, scale, w.warnAt + 60000).source
+  expect(later.includes('attributeName="opacity"')).toBe(false)
+  expect(later.includes('#f0883e')).toBe(true)
 })

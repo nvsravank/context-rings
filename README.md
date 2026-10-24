@@ -19,10 +19,12 @@ tokens used and whether it is working, idle or closed.
   default), and only while it is active. When it reaches red (90%) you get a
   single toast, shared across all your open sessions.
 - **Cache about to expire.** Each reply records whether its prompt cache lives
-  1 hour or 5 minutes. A ring flashes when its session's cache is close to
-  running out (10 minutes before for a 1-hour cache, 1 minute for 5 minutes),
-  so you can reply or `/compact` before the next message resends everything.
-  Hovering shows the time left, or how long ago it expired.
+  1 hour or 5 minutes. When a session's cache is close to running out (10
+  minutes before for 1 hour, 1 minute for 5 minutes), its ring pulses for 10
+  seconds, then an orange arc around it counts down to expiry, and you get one
+  toast with the session, its size and the time left. Only sessions of 500K or
+  more are warned about, since smaller ones are cheap to cache again. Hovering
+  shows the time left, or how long ago it expired.
 - **Up to ten rings.** Past ten, the least recent sessions fold into a `+N`;
   point at it to see their names. This session's ring always shows.
 - **This folder.** The chip at the start of the row reads **All**; click it to
@@ -50,8 +52,9 @@ Each is a row in the mod's settings in `/config`.
 | Subagent limit | 500K | 100K to 1M |
 | Subagent dot appears (yellow) at | 75% | 30% to 90% |
 | Subagent dot turns red (and toasts) at | 90% | 50% to 95% |
-| 1-hour cache: flash before it expires | 10m | Off, 5m to 30m |
-| 5-minute cache: flash before it expires | 1m | Off, 30s to 2m |
+| 1-hour cache: warn before it expires | 10m | Off, 5m to 30m |
+| 5-minute cache: warn before it expires | 1m | Off, 30s to 2m |
+| Cache warning only for sessions over | 500K | Any, 100K to 1M |
 
 ## What it runs and changes
 
@@ -79,7 +82,7 @@ What it runs (read-only, no shell except the first):
 
 What it writes: only its own store in Claude Code's plugin data, holding
 recent session names (so a closed session keeps its title) and which
-subagents were already toasted. Its hooks pass every event through unchanged.
+subagents and cache warnings were already toasted. Its hooks pass every event through unchanged.
 
 Uninstall with `/plugin uninstall context-rings`; nothing is left behind but
 that store.

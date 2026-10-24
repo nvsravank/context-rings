@@ -1,7 +1,7 @@
 {
   "name": "context-rings",
   "displayName": "Context Rings",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "A ring per active session above the prompt, filled by how much of its context window is used; newest activity first, hover for the name",
   "author": {
     "name": "Sravan",
@@ -122,8 +122,8 @@
     },
     "cacheWarnHour": {
       "type": "string",
-      "title": "1-hour cache: flash before it expires",
-      "description": "How long before a session's 1-hour prompt cache runs out its ring starts flashing.",
+      "title": "1-hour cache: warn before it expires",
+      "description": "How long before a session's 1-hour prompt cache runs out its ring pulses, shows a countdown arc, and you get a toast.",
       "options": [
         "Off",
         "5m",
@@ -136,8 +136,8 @@
     },
     "cacheWarnFiveMin": {
       "type": "string",
-      "title": "5-minute cache: flash before it expires",
-      "description": "How long before a session's 5-minute prompt cache runs out its ring starts flashing.",
+      "title": "5-minute cache: warn before it expires",
+      "description": "How long before a session's 5-minute prompt cache runs out its ring pulses, shows a countdown arc, and you get a toast.",
       "options": [
         "Off",
         "30s",
@@ -145,6 +145,25 @@
         "2m"
       ],
       "default": "1m"
+    },
+    "cacheWarnMin": {
+      "type": "string",
+      "title": "Cache warning only for sessions over",
+      "description": "Smaller sessions are cheap to cache again, so they get no warning.",
+      "options": [
+        "Any",
+        "100K",
+        "200K",
+        "300K",
+        "400K",
+        "500K",
+        "600K",
+        "700K",
+        "800K",
+        "900K",
+        "1M"
+      ],
+      "default": "500K"
     }
   }
 }
