@@ -267,7 +267,7 @@ function startBlink($: Engine) {
           await update($, blink, () => false)
           return
         }
-        await update($, blink, on => !on)
+        await update($, blink, isLit => !isLit)
         tick()
       })().catch(() => (blinkTimer = null))
     })
