@@ -11,6 +11,7 @@ import {
   cacheWarning,
   capRings,
   fmt,
+  folderOrder,
   glyph,
   lastContextTokens,
   lastMessageAt,
@@ -19,14 +20,16 @@ import {
   parsePct,
   parseSize,
   pctOf,
+  parseContextShow,
   parseStat,
   parseWait,
   projectDir,
   ringLabel,
   ringsSvg,
+  subLabel,
   splitTail,
 } from './parse'
-import type { CacheWarn, Scale, TranscriptFile } from './parse'
+import type { CacheWarn, ContextShow, Scale, TranscriptFile } from './parse'
 
 type Engine = EngineInterface
 
@@ -47,10 +50,13 @@ const c = { ok: 'success', warn: 'warning', bad: 'error', chip: 'suggestion' } a
 // --- preferences: a change reloads the module, so register sets them again ---
 let main: Scale = { limit: 1000 * K, yellow: 50, red: 80 }
 let sub: Scale = { limit: 500 * K, yellow: 75, red: 90 }
+let show: ContextShow = 'off'
 let warn: CacheWarn = { hour: 10 * 60 * 1000, fiveMin: 60 * 1000, minTokens: 500 * K }
 
 const rings = atom({ plugin: 'context-rings', key: 'rings' } as const, [])
+// The chip's view: '' is this session's folder (where it starts), ALL every folder, else a folder.
 const folder = atom({ plugin: 'context-rings', key: 'folder' } as const, '')
+const ALL = '*'
 // Flips each second while a ring pulses; only the terminal reads it (the SVG animates itself).
 const blink = atom({ plugin: 'context-rings', key: 'blink' } as const, false)
 
@@ -286,18 +292,30 @@ function schedule($: Engine) {
 }
 
 let lastCycleAt = 0
-/** The chip toggles All ↔ this session's folder. */
+
+/** The folder the chip shows: this session's folder for '', or ALL. */
+function viewOf(picked: string, all: readonly Ring[]): string {
+  return picked || all.find(r => r.isCurrent)?.cwd || ALL
+}
+
+/** The chip cycles this session's folder → All → every other folder, A to Z → this folder. */
 async function cycleFolder($: Engine) {
   const now = await $.clock.now()
   if (now - lastCycleAt < 400) return
   lastCycleAt = now
-  const here = (await read($, rings)).find(r => r.isCurrent)?.cwd ?? ''
-  await update($, folder, cur => (cur || !here ? '' : here))
+  const all = await read($, rings)
+  const here = all.find(r => r.isCurrent)?.cwd ?? ''
+  const order = folderOrder(all, ALL)
+  await update($, folder, cur => {
+    const next = order[(order.indexOf(viewOf(cur, all)) + 1) % order.length]!
+    return next === here ? '' : next
+  })
 }
 
 export const register: Register = (on, options) => {
   main = { limit: parseSize(options.contextWindow, 1000 * K), yellow: parsePct(options.mainYellow, 50), red: parsePct(options.mainRed, 80) }
   sub = { limit: parseSize(options.subagentLimit, 500 * K), yellow: parsePct(options.subagentYellow, 75), red: parsePct(options.subagentRed, 90) }
+  show = parseContextShow(options.hoverContext)
   warn = {
     hour: parseWait(options.cacheWarnHour, 10 * 60 * 1000),
     fiveMin: parseWait(options.cacheWarnFiveMin, 60 * 1000),
@@ -325,17 +343,17 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const all = await read($, rings)
     if (e.props.hasSurvey || all.length === 0) return next(e)
-    const picked = await read($, folder)
-    const { shown, hidden } = capRings(picked ? all.filter(r => r.cwd === picked) : all)
+    const view = viewOf(await read($, folder), all)
+    const { shown, hidden } = capRings(view === ALL ? all : all.filter(r => r.cwd === view))
     const now = await $.clock.now()
     const ui = $.ui.resolve(e)
     const { Box, Text, Button } = ui
-    const chip = <Button key={FOLDER_KEY} label={picked ? baseName(picked) : 'All'} onPress={() => void cycleFolder($)} />
+    const chip = <Button key={FOLDER_KEY} label={view === ALL ? 'All' : baseName(view)} onPress={() => void cycleFolder($)} />
 
     // Desktop: one interactive SVG; pointing at a ring reveals its label inside it (CSS :hover).
     if (e.surface !== 'terminal' && 'Svg' in ui) {
       const { Svg } = ui
-      const svg = ringsSvg(shown, main, sub, now, hidden)
+      const svg = ringsSvg(shown, main, sub, now, hidden, show)
       return (
         <Box flexDirection="row" alignItems="center">
           {chip}
@@ -349,6 +367,7 @@ export const register: Register = (on, options) => {
     // Terminal: glyphs; each is a hover group that reveals its label at the row's end.
     const isBlinkOn = await read($, blink)
     const scope = (r: Ring) => `ring-${r.id.slice(0, 20)}`
+    const subScope = (r: Ring, s: Sub) => `sub-${r.id.slice(0, 8)}-${s.id.slice(0, 20)}`
     return (
       <Box flexDirection="row" width={e.props.bodyColumns}>
         {chip}
@@ -359,8 +378,14 @@ export const register: Register = (on, options) => {
               <Text color={c[level(pct, main)]} dimColor={!r.isLive} bold={r.isCurrent} inverse={isPulsing(r, now) && isBlinkOn}>
                 {glyph(pct)}
                 {r.cache === 'warn' ? '⧗' : ''}
-                {r.subs.map(s => (level(pctOf(s.tokens, sub), sub) === 'bad' ? '•' : '·')).join('')}
               </Text>
+              {r.subs.map(s => (
+                <Box key={s.id} hover={{ scope: subScope(r, s) }}>
+                  <Text color={c[level(pctOf(s.tokens, sub), sub)]} dimColor={!r.isLive}>
+                    •
+                  </Text>
+                </Box>
+              ))}
             </Box>
           )
         })}
@@ -379,10 +404,19 @@ export const register: Register = (on, options) => {
         {shown.map(r => (
           <Box key={`label-${r.id}`} marginLeft={2} flexShrink={1} display="none" hover={{ scope: scope(r), display: 'flex' }}>
             <Text dimColor wrap="truncate-end">
-              {ringLabel(r, main, now)}
+              {ringLabel(r, main, now, show)}
             </Text>
           </Box>
         ))}
+        {shown.flatMap(r =>
+          r.subs.map(s => (
+            <Box key={`label-${r.id}-${s.id}`} marginLeft={2} flexShrink={1} display="none" hover={{ scope: subScope(r, s), display: 'flex' }}>
+              <Text dimColor wrap="truncate-end">
+                {subLabel(s, sub)}
+              </Text>
+            </Box>
+          )),
+        )}
       </Box>
     )
   })
