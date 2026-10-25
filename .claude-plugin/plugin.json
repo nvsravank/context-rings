@@ -1,7 +1,7 @@
 {
   "name": "context-rings",
   "displayName": "Context Rings",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "A ring per active session above the prompt, filled by how much of its context window is used; newest activity first, hover for the name",
   "author": {
     "name": "Sravan",
@@ -69,6 +69,18 @@
         "95%"
       ],
       "default": "80%"
+    },
+    "hoverContext": {
+      "type": "string",
+      "title": "Context used on hover",
+      "description": "What a session's hover label says about its context, as in 620K, 620K (62%) or 620K of 1M (62%). The ring's fill already shows it.",
+      "options": [
+        "Off",
+        "Tokens",
+        "Tokens and %",
+        "Tokens, limit and %"
+      ],
+      "default": "Off"
     },
     "subagentLimit": {
       "type": "string",

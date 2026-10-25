@@ -1,6 +1,6 @@
 // Pure helpers: no `$` here, so the validator only has to follow register.tsx.
 
-import type { Ring } from '../types'
+import type { Ring, Sub } from '../types'
 
 export const K = 1000
 
@@ -225,31 +225,51 @@ export function parsePct(text: unknown, fallback: number): number {
   return m ? Number(m[1]) : fallback
 }
 
-export function ago(ms: number): string {
-  const s = Math.max(0, Math.round(ms / 1000))
-  if (s < 60) return `${s}s ago`
-  if (s < 3600) return `${Math.round(s / 60)}m ago`
-  return `${Math.round(s / 3600)}h ago`
-}
-
 const HEX = { ok: '#3fb950', warn: '#d29922', bad: '#f85149' } as const
 const ORANGE = '#f0883e'
 const RING = 24
-const DOT = 8
+const DOT = 11
+const DOT_R = 4.5
 
-/** What hovering a ring reveals: name, folder, fill and state. */
-export function ringLabel(r: Ring, main: Scale, now: number): string {
-  const pct = pctOf(r.tokens, main)
-  const state = r.isLive ? (r.isBusy ? 'working' : 'idle') : `closed ${ago(now - r.lastAt)}`
-  const subs = r.subs.map(s => `${s.name} ${fmt(s.tokens)}`).join(', ')
-  return `${r.name} · ${baseName(r.cwd)} · ${fmt(r.tokens)} of ${fmt(main.limit)} (${Math.round(pct)}%) · ${state}${cacheText(r, now)}${r.isCurrent ? ' · this session' : ''}${subs ? ` · subagents: ${subs}` : ''}`
+/** How much of a session's context its hover label shows. */
+export type ContextShow = 'off' | 'tokens' | 'pct' | 'full'
+
+/** The "Context used on hover" setting → what it shows; off unless set. */
+export function parseContextShow(text: unknown): ContextShow {
+  return text === 'Tokens' ? 'tokens' : text === 'Tokens and %' ? 'pct' : text === 'Tokens, limit and %' ? 'full' : 'off'
+}
+
+/** 620000 of 1M → "620K", "620K (62%)" or "620K of 1M (62%)". */
+function contextText(tokens: number, scale: Scale, show: ContextShow): string {
+  const pct = `(${Math.round(pctOf(tokens, scale))}%)`
+  if (show === 'tokens') return fmt(tokens)
+  if (show === 'pct') return `${fmt(tokens)} ${pct}`
+  if (show === 'full') return `${fmt(tokens)} of ${fmt(scale.limit)} ${pct}`
+  return ''
+}
+
+// Longest name a hover label shows before cutting it with "…".
+const NAME_MAX = 40
+
+export function shortName(name: string): string {
+  return name.length > NAME_MAX ? `${name.slice(0, NAME_MAX).trimEnd()}…` : name
+}
+
+/** What hovering a ring reveals: its name, the context if chosen, and its cache. */
+export function ringLabel(r: Ring, main: Scale, now: number, show: ContextShow = 'off'): string {
+  return [shortName(r.name), contextText(r.tokens, main, show), cacheText(r, now)].filter(Boolean).join(' · ')
+}
+
+/** What hovering a subagent's dot reveals: its name and size against the subagent limit. */
+export function subLabel(s: Sub, sub: Scale): string {
+  return `${shortName(s.name)} · ${contextText(s.tokens, sub, 'full')}`
 }
 
 function cacheText(r: Ring, now: number): string {
   if (r.cache === 'none' || !r.cacheTtl) return ''
   const left = r.cacheAt + r.cacheTtl - now
-  const life = r.cacheTtl >= HOUR ? '1h' : '5m'
-  return left > 0 ? ` · ${life} cache, ${until(left)} left` : ` · ${life} cache expired ${ago(-left)}`
+  const life = r.cacheTtl >= HOUR ? '1hr' : '5min'
+  return left > 0 ? `${life}, ${until(left)} left` : `${life}, expired`
 }
 
 function until(ms: number): string {
@@ -257,7 +277,7 @@ function until(ms: number): string {
   return s < 60 ? `${s}s` : `${Math.round(s / 60)}m`
 }
 
-/** One session's ring, with its subagents' dots after it. */
+/** One session's ring; its subagents' dots are drawn beside it by `ringsSvg`. */
 export function ringSvg(r: Ring, main: Scale, sub: Scale, now = 0): { source: string; width: number; height: number } {
   const pct = pctOf(r.tokens, main)
   const color = HEX[level(pct, main)]
@@ -286,11 +306,7 @@ export function ringSvg(r: Ring, main: Scale, sub: Scale, now = 0): { source: st
       : '',
     `</g>`,
   ]
-  let x = RING
-  for (const s of r.subs) {
-    parts.push(`<circle cx="${x + DOT / 2}" cy="${c}" r="3.5" fill="${HEX[level(pctOf(s.tokens, sub), sub)]}"/>`)
-    x += DOT
-  }
+  const x = RING
   return {
     source: `<svg xmlns="http://www.w3.org/2000/svg" width="${x}" height="${RING}" viewBox="0 0 ${x} ${RING}">${parts.join('')}</svg>`,
     width: x,
@@ -320,9 +336,17 @@ export function capRings(rings: readonly Ring[], max = MAX_RINGS): { shown: Ring
   return { shown, hidden: rings.filter(r => !shown.includes(r)) }
 }
 
+/** The chip's stops: this session's folder, then `all`, then every other folder by name. */
+export function folderOrder(rings: readonly Ring[], all: string): string[] {
+  const here = rings.find(r => r.isCurrent)?.cwd ?? ''
+  const others = [...new Set(rings.map(r => r.cwd).filter(cwd => cwd && cwd !== here))]
+  others.sort((a, b) => baseName(a).localeCompare(baseName(b)) || a.localeCompare(b))
+  return [...(here ? [here] : []), all, ...others]
+}
+
 /** What hovering the "+N" reveals: the names of the folded sessions. */
 export function moreLabel(hidden: readonly Ring[]): string {
-  return `${hidden.length} more: ${hidden.map(r => r.name).join(', ')}`
+  return `${hidden.length} more: ${hidden.map(r => shortName(r.name)).join(', ')}`
 }
 
 /**
@@ -335,29 +359,36 @@ export function ringsSvg(
   sub: Scale,
   now: number,
   hidden: readonly Ring[] = [],
+  show: ContextShow = 'off',
 ): { source: string; width: number; height: number } {
-  let x = 0
-  const groups: string[] = []
-  const pieces = rings.map(r => ringSvg(r, main, sub, now))
-  pieces.forEach(p => (x += p.width + 6))
+  // Each ring and each subagent dot is its own hover target, with its own label.
+  const widthOf = (r: Ring) => RING + r.subs.length * DOT + 6
   const moreW = hidden.length ? 8 * String(hidden.length).length + 16 : 0
-  const labelX = x + moreW + 6
-  x = 0
-  rings.forEach((r, i) => {
-    const p = pieces[i]!
-    const inner = p.source.replace(/^<svg[^>]*>/, '').replace(/<\/svg>$/, '')
+  const labelX = rings.reduce((w, r) => w + widthOf(r), 0) + moreW + 6
+  const label = (text: string) => `<text class="l" x="${labelX}" y="${RING / 2 + 4}">${esc(text)}</text>`
+  const groups: string[] = []
+  let x = 0
+  for (const r of rings) {
+    const inner = ringSvg(r, main, sub, now).source.replace(/^<svg[^>]*>/, '').replace(/<\/svg>$/, '')
     groups.push(
-      `<g class="r"><rect x="${x}" y="0" width="${p.width + 6}" height="${RING}" fill="transparent"/>` +
-        `<g transform="translate(${x} 0)">${inner}</g>` +
-        `<text class="l" x="${labelX}" y="${RING / 2 + 4}">${esc(ringLabel(r, main, now))}</text></g>`,
+      `<g class="r"><rect x="${x}" y="0" width="${RING + (r.subs.length ? 0 : 6)}" height="${RING}" fill="transparent"/>` +
+        `<g transform="translate(${x} 0)">${inner}</g>${label(ringLabel(r, main, now, show))}</g>`,
     )
-    x += p.width + 6
-  })
+    let dx = x + RING
+    for (const s of r.subs) {
+      groups.push(
+        `<g class="r"><rect x="${dx}" y="0" width="${DOT}" height="${RING}" fill="transparent"/>` +
+          `<circle cx="${dx + DOT / 2}" cy="${RING / 2}" r="${DOT_R}" fill="${HEX[level(pctOf(s.tokens, sub), sub)]}" opacity="${r.isLive ? 1 : 0.4}"/>` +
+          `${label(subLabel(s, sub))}</g>`,
+      )
+      dx += DOT
+    }
+    x += widthOf(r)
+  }
   if (hidden.length) {
     groups.push(
       `<g class="r"><rect x="${x}" y="0" width="${moreW}" height="${RING}" fill="transparent"/>` +
-        `<text class="m" x="${x}" y="${RING / 2 + 4}">+${hidden.length}</text>` +
-        `<text class="l" x="${labelX}" y="${RING / 2 + 4}">${esc(moreLabel(hidden))}</text></g>`,
+        `<text class="m" x="${x}" y="${RING / 2 + 4}">+${hidden.length}</text>${label(moreLabel(hidden))}</g>`,
     )
   }
   const width = labelX + LABEL_W

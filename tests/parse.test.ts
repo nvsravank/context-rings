@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { cacheInfo, cacheToast, cacheWarning, capRings, fmt, lastContextTokens, lastMessageAt, level, parsePct, parseSize, parseStat, parseWait, ringLabel, ringSvg, ringsSvg, splitTail } from '../hooks/parse'
+import { cacheInfo, cacheToast, cacheWarning, capRings, fmt, folderOrder, lastContextTokens, lastMessageAt, level, parseContextShow, parsePct, parseSize, parseStat, parseWait, ringLabel, ringSvg, ringsSvg, shortName, splitTail, subLabel } from '../hooks/parse'
 
 const SID = '0123abcd-0123-4567-89ab-0123456789ab'
 
@@ -34,12 +34,24 @@ test('tail output splits per file', async () => {
   expect(splitTail('only', ['/x']).get('/x')).toBe('only')
 })
 
-test('a ring draws and its label reads', async () => {
-  const ring = { id: SID, name: 'A <b>', cwd: '/x/proj', tokens: 500000, isLive: true, isBusy: false, isCurrent: true, lastAt: 0, subs: [{ id: 's', name: 'sub', tokens: 200000 }], cacheTtl: 0, cacheAt: 0, cache: 'none' as const, cacheWarnAt: 0, cacheArc: 0 }
-  const { source } = ringSvg(ring, { limit: 1000000, yellow: 50, red: 80 }, { limit: 200000, yellow: 50, red: 80 })
-  const label = ringLabel(ring, { limit: 1000000, yellow: 50, red: 80 }, 0)
-  expect(source.includes('<circle')).toBe(true)
-  expect(label.includes('A <b> · proj · 500K of 1M (50%)')).toBe(true)
+test('a ring draws and its labels read', async () => {
+  const main = { limit: 1000000, yellow: 50, red: 80 }
+  const sub = { limit: 500000, yellow: 50, red: 80 }
+  const ring = { id: SID, name: 'A <b>', cwd: '/x/proj', tokens: 620000, isLive: true, isBusy: false, isCurrent: true, lastAt: 0, subs: [{ id: 's', name: 'Explore codebase', tokens: 410000 }], cacheTtl: 3600000, cacheAt: 1, cache: 'warm' as const, cacheWarnAt: 0, cacheArc: 0 }
+  expect(ringSvg(ring, main, sub).source.includes('<circle')).toBe(true)
+  // By default: name and cache only; no folder, state, "this session" or subagents.
+  expect(ringLabel(ring, main, 1 + 53 * 60000)).toBe('A <b> · 1hr, 7m left')
+  expect(ringLabel(ring, main, 61 * 60000)).toBe('A <b> · 1hr, expired')
+  expect(ringLabel(ring, main, 1, parseContextShow('Tokens'))).toBe('A <b> · 620K · 1hr, 60m left')
+  expect(ringLabel(ring, main, 1, parseContextShow('Tokens and %')).includes('620K (62%)')).toBe(true)
+  expect(ringLabel(ring, main, 1, parseContextShow('Tokens, limit and %')).includes('620K of 1M (62%)')).toBe(true)
+  expect(ringLabel({ ...ring, cache: 'none' as const }, main, 0)).toBe('A <b>')
+  expect(shortName('x'.repeat(50))).toBe(`${'x'.repeat(40)}…`)
+  expect(subLabel(ring.subs[0]!, sub)).toBe('Explore codebase · 410K of 500K (82%)')
+  // Each subagent dot is its own hover target, with its own label.
+  const all = ringsSvg([ring], main, sub, 0).source
+  expect(all.includes('Explore codebase · 410K of 500K (82%)')).toBe(true)
+  expect((all.match(/class="r"/g) ?? []).length).toBe(2)
 })
 
 test('levels follow each scale', async () => {
@@ -117,4 +129,11 @@ test('the cache warning starts in its window, only for big sessions, with a shri
   const later = ringSvg(ring, scale, scale, w.warnAt + 60000).source
   expect(later.includes('attributeName="opacity"')).toBe(false)
   expect(later.includes('#f0883e')).toBe(true)
+})
+
+test('the chip goes this folder, All, then the other folders A to Z', async () => {
+  const ring = (cwd: string, isCurrent = false) => ({ id: cwd, name: cwd, cwd, tokens: 0, isLive: true, isBusy: false, isCurrent, lastAt: 0, subs: [], cacheTtl: 0, cacheAt: 0, cache: 'none' as const, cacheWarnAt: 0, cacheArc: 0 })
+  const rings = [ring('/w/zeta'), ring('/w/mid', true), ring('/w/alpha'), ring('/w/zeta'), ring('/w/Beta')]
+  expect(folderOrder(rings, '*')).toEqual(['/w/mid', '*', '/w/alpha', '/w/Beta', '/w/zeta'])
+  expect(folderOrder([ring('/w/b'), ring('/w/a')], '*')).toEqual(['*', '/w/a', '/w/b'])
 })

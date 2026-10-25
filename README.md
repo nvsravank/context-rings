@@ -2,8 +2,9 @@
 
 A Claude Code mod that shows how full each of your sessions' context windows
 is, as a row of rings above the prompt. The session you were active in most
-recently comes first. Point at a ring to see the session's name, folder,
-tokens used and whether it is working, idle or closed.
+recently comes first. Point at a ring to see the session's name and its
+cache, like `Fix login bug · 1hr, 7m left`; point at a subagent's dot to see
+its name and size.
 
 - **One ring per session.** A session shows for an hour after its last
   message, matching the prompt cache, and fades once its process closes.
@@ -17,18 +18,20 @@ tokens used and whether it is working, idle or closed.
 - **Subagents.** A subagent appears as a small dot after its session's ring
   only once it reaches the yellow line of the subagent limit (75% of 500K by
   default), and only while it is active. When it reaches red (90%) you get a
-  single toast, shared across all your open sessions.
+  single toast, shared across all your open sessions. Point at a dot to see
+  the subagent's name and size, like `Explore codebase · 410K of 500K (82%)`.
 - **Cache about to expire.** Each reply records whether its prompt cache lives
   1 hour or 5 minutes. When a session's cache is close to running out (10
   minutes before for 1 hour, 1 minute for 5 minutes), its ring pulses for 10
   seconds, then an orange arc around it counts down to expiry, and you get one
   toast with the session, its size and the time left. Only sessions of 500K or
   more are warned about, since smaller ones are cheap to cache again. Hovering
-  shows the time left, or how long ago it expired.
+  shows the time left, or that it expired.
 - **Up to ten rings.** Past ten, the least recent sessions fold into a `+N`;
   point at it to see their names. This session's ring always shows.
-- **This folder.** The chip at the start of the row reads **All**; click it to
-  show only the sessions in this session's folder, and again to go back.
+- **Folders.** The row starts on this session's folder, named on the chip at
+  its start. Click the chip to step to **All**, then each other folder A to Z,
+  and back.
 
 On the terminal the rings are drawn as `○ ◔ ◑ ◕ ●`.
 
@@ -49,6 +52,7 @@ Each is a row in the mod's settings in `/config`.
 | Session context window | 1M | 100K to 1M |
 | Session ring turns yellow at | 50% | 30% to 90% |
 | Session ring turns red at | 80% | 50% to 95% |
+| Context used on hover | Off | Off, Tokens, Tokens and %, Tokens, limit and % |
 | Subagent limit | 500K | 100K to 1M |
 | Subagent dot appears (yellow) at | 75% | 30% to 90% |
 | Subagent dot turns red (and toasts) at | 90% | 50% to 95% |
