@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { cacheInfo, cacheToast, cacheWarning, capRings, fmt, folderOrder, lastContextTokens, lastMessageAt, level, parseContextShow, parsePct, parseSize, parseStat, parseWait, ringLabel, ringSvg, ringsSvg, shortName, splitTail, subLabel } from '../hooks/parse'
+import { cacheInfo, cacheToast, cacheWarning, capRings, configDirOf, cwdIn, fmt, folderOrder, lastContextTokens, lastMessageAt, level, parseContextShow, parsePct, parsePsPids, parseSize, parseTasklistPids, parseWait, ringLabel, ringSvg, ringsSvg, shortName, splitTail, subLabel, transcriptOf } from '../hooks/parse'
 
 const SID = '0123abcd-0123-4567-89ab-0123456789ab'
 
@@ -12,12 +12,35 @@ test('sizes read and print in K and M', async () => {
   expect(fmt(1000000)).toBe('1M')
 })
 
-test('stat lines sort into main and subagent transcripts', async () => {
-  const rows = parseStat(`1700000000 /h/.claude/projects/-a/${SID}.jsonl\n1700000001 /h/.claude/projects/-a/${SID}/subagents/agent-abc123.jsonl\n`)
-  expect(rows.length).toBe(2)
-  expect(rows[0]!.kind).toBe('main')
-  expect(rows[1]!.kind).toBe('sub')
-  expect(rows[1]!.mtime).toBe(1700000001000)
+test('transcript paths sort into main and subagent, with / or \\', async () => {
+  const main = transcriptOf(`/h/.claude/projects/-a/${SID}.jsonl`, 1700000000000)
+  expect(main).toEqual({ kind: 'main', path: `/h/.claude/projects/-a/${SID}.jsonl`, mtime: 1700000000000, sessionId: SID })
+  const sub = transcriptOf(`C:/Users/m/.claude/projects/C--code-a/${SID}/subagents/agent-abc123.jsonl`, 1)
+  expect(sub?.kind).toBe('sub')
+  expect(sub?.kind === 'sub' && sub.agentId).toBe('abc123')
+  expect(transcriptOf(`C:\\Users\\m\\.claude\\projects\\x\\${SID}.jsonl`, 1)?.sessionId).toBe(SID)
+  expect(transcriptOf('/h/.claude/projects/-a/notes.jsonl', 1)).toBeUndefined()
+})
+
+test("Claude Code's folder comes from the environment on each platform", async () => {
+  expect(configDirOf({ home: '/Users/m', isWindows: false })).toBe('/Users/m/.claude')
+  expect(configDirOf({ home: '/home/m/', isWindows: false })).toBe('/home/m/.claude')
+  expect(configDirOf({ userProfile: 'C:\\Users\\m', home: '/c/Users/m', isWindows: true })).toBe('C:/Users/m/.claude')
+  expect(configDirOf({ configDir: 'D:\\claude\\', userProfile: 'C:\\Users\\m', isWindows: true })).toBe('D:/claude')
+  expect(configDirOf({ configDir: '/', isWindows: false })).toBe('/')
+})
+
+test('running process ids read from ps and from tasklist', async () => {
+  expect([...parsePsPids('  101\n 202\n\n')]).toEqual([101, 202])
+  const tasklist = '"claude.exe","4120","Console","1","210,512 K"\r\n"node.exe","88","Services","0","1,024 K"\r\n'
+  expect([...parseTasklistPids(tasklist)]).toEqual([4120, 88])
+  expect(parseTasklistPids('INFO: No tasks are running which match the specified criteria.').size).toBe(0)
+})
+
+test("a transcript's folder decodes, Windows paths included", async () => {
+  expect(cwdIn('{"cwd":"/Users/m/code/a","x":1}')).toBe('/Users/m/code/a')
+  expect(cwdIn('{"cwd":"C:\\\\code\\\\my \\"app\\"","x":1}')).toBe('C:\\code\\my "app"')
+  expect(cwdIn('{"type":"user"}')).toBeUndefined()
 })
 
 test('the last assistant usage gives the context', async () => {
@@ -32,6 +55,8 @@ test('tail output splits per file', async () => {
   expect(map.get('/a')!.includes('A1')).toBe(true)
   expect(map.get('/b')!.includes('B1')).toBe(true)
   expect(splitTail('only', ['/x']).get('/x')).toBe('only')
+  // The Windows reader heads even a single file.
+  expect(splitTail('==> C:/a <==\nA1\n', ['C:/a'], true).get('C:/a')).toBe('\nA1\n')
 })
 
 test('a ring draws and its labels read', async () => {
