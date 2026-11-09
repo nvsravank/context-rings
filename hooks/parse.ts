@@ -18,8 +18,9 @@ export function fmt(tokens: number): string {
   return `${Math.round(tokens / K)}K`
 }
 
+/** The last part of a folder path, whether it uses / or Windows' \\. */
 export function baseName(path: string): string {
-  const parts = path.split('/').filter(Boolean)
+  const parts = path.split(/[\\/]/).filter(Boolean)
   return parts[parts.length - 1] ?? path
 }
 
@@ -32,32 +33,64 @@ export type TranscriptFile =
   | { kind: 'main'; path: string; mtime: number; sessionId: string }
   | { kind: 'sub'; path: string; mtime: number; sessionId: string; agentId: string }
 
-/** Lines of `stat -f '%m %N'`: seconds, a space, the path. */
-export function parseStat(stdout: string): TranscriptFile[] {
-  const out: TranscriptFile[] = []
-  for (const line of stdout.split('\n')) {
-    const i = line.indexOf(' ')
-    if (i <= 0) continue
-    const mtime = Number(line.slice(0, i)) * 1000
-    const path = line.slice(i + 1)
-    const sub = /\/([0-9a-f-]{36})\/subagents\/agent-([A-Za-z0-9_-]+)\.jsonl$/.exec(path)
-    if (sub) {
-      out.push({ kind: 'sub', path, mtime, sessionId: sub[1]!, agentId: sub[2]! })
-      continue
-    }
-    const main = /\/([0-9a-f-]{36})\.jsonl$/.exec(path)
-    if (main) out.push({ kind: 'main', path, mtime, sessionId: main[1]! })
+const SID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+/** A session's folder or transcript name: its id. */
+export const SESSION_ID = new RegExp(`^${SID}$`)
+
+/** A transcript by its path: a session's own, or one of its subagents'. Undefined for anything else. */
+export function transcriptOf(path: string, mtime: number): TranscriptFile | undefined {
+  const sub = new RegExp(`[\\\\/](${SID})[\\\\/]subagents[\\\\/]agent-([A-Za-z0-9_-]+)\\.jsonl$`).exec(path)
+  if (sub) return { kind: 'sub', path, mtime, sessionId: sub[1]!, agentId: sub[2]! }
+  const main = new RegExp(`[\\\\/](${SID})\\.jsonl$`).exec(path)
+  if (main) return { kind: 'main', path, mtime, sessionId: main[1]! }
+  return undefined
+}
+
+/**
+ * Claude Code's folder: CLAUDE_CONFIG_DIR, else .claude in the home folder
+ * (USERPROFILE on Windows, HOME elsewhere). Written with / throughout, which
+ * Windows accepts too, so every path built from it reads the same way.
+ */
+export function configDirOf(env: { configDir?: string; home?: string; userProfile?: string; isWindows: boolean }): string {
+  const home = (env.isWindows ? env.userProfile || env.home : env.home || env.userProfile) ?? ''
+  const dir = env.configDir || (home ? `${home.replace(/[\\/]+$/, '')}/.claude` : '')
+  return dir.replace(/\\/g, '/').replace(/(.)\/+$/, '$1')
+}
+
+/** Process ids in `ps -o pid=` output: one per line. */
+export function parsePsPids(stdout: string): Set<number> {
+  return new Set(stdout.split('\n').map(s => Number(s.trim())).filter(n => Number.isInteger(n) && n > 0))
+}
+
+/** Process ids in `tasklist /FO CSV /NH` output: the second quoted field of each row. */
+export function parseTasklistPids(stdout: string): Set<number> {
+  const out = new Set<number>()
+  for (const line of stdout.split(/\r?\n/)) {
+    const pid = Number(/^"[^"]*","(\d+)"/.exec(line)?.[1])
+    if (pid > 0) out.add(pid)
   }
   return out
 }
 
+/** The first `cwd` a transcript's text names, JSON-decoded (a Windows path's \\ is escaped there). */
+export function cwdIn(text: string): string | undefined {
+  const m = /"cwd":"((?:[^"\\]|\\.)*)"/.exec(text)
+  if (!m) return undefined
+  try {
+    return JSON.parse(`"${m[1]}"`) as string
+  } catch {
+    return undefined
+  }
+}
+
 /**
  * Splits the output of `tail -c N a b c` into each file's text. With more than
- * one file tail heads each with `==> path <==`; with one it writes none.
+ * one file tail heads each with `==> path <==`; with one it writes none
+ * (the Windows reader heads every file: `isAlwaysHeaded`).
  */
-export function splitTail(stdout: string, paths: readonly string[]): Map<string, string> {
+export function splitTail(stdout: string, paths: readonly string[], isAlwaysHeaded = false): Map<string, string> {
   const map = new Map<string, string>()
-  if (paths.length === 1) {
+  if (paths.length === 1 && !isAlwaysHeaded) {
     map.set(paths[0]!, stdout)
     return map
   }

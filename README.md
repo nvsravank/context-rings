@@ -37,7 +37,8 @@ On the terminal the rings are drawn as `○ ◔ ◑ ◕ ●`.
 
 ## Install
 
-At the prompt of a terminal session:
+Works on macOS, Linux and Windows, in the terminal and the Desktop app. At
+the prompt of a terminal session:
 
 ```
 /plugin install context-rings --marketplace nvsravank/context-rings
@@ -67,22 +68,23 @@ session it runs in through Claude Code's API. It reads Claude Code's own files
 about your sessions, on your machine, to find each session's name and context
 size.
 
-What it reads, every 5 seconds and after each turn:
+It finds Claude Code's folder from `CLAUDE_CONFIG_DIR`, else `.claude` in
+your home folder (`HOME`, or `USERPROFILE` on Windows), written `~/.claude`
+below. What it reads, every 5 seconds and after each turn:
 
 | What | Why |
 | --- | --- |
 | `~/.claude/sessions/*.json` | Which sessions are running, their names, folders and whether they are working |
+| `~/.claude/projects/` (listing each project folder, for when each transcript changed) | Which transcripts changed in the last hour |
 | `~/.claude/projects/**/*.jsonl` (the last 1 MB of each changed in the last hour) | The context size the last reply or compaction reported, when the last message and reply came, and the prompt cache's lifetime |
 | `~/.claude/projects/**/custom-title.json`, `subagents/*.meta.json` | Session titles and subagent descriptions |
 
-What it runs (read-only, no shell except the first):
+What it runs (read-only, no shell):
 
-| Command | Why |
-| --- | --- |
-| `sh -c 'printf %s "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"'` | Once, to find Claude Code's folder |
-| `ps -o pid= -p <pids>` | Which session processes are still running |
-| `find ~/.claude/projects … -exec stat -f '%m %N'` | Which transcripts changed, and when |
-| `tail -c 1000000 <transcripts>` | The end of each changed transcript |
+| macOS and Linux | Windows | Why |
+| --- | --- | --- |
+| `/bin/ps -o pid= -p <pids>` | `tasklist.exe /FO CSV /NH` | Which session processes are still running |
+| `/usr/bin/tail -c 1000000 <transcripts>` | `powershell.exe`, reading the same last 1 MB of each without locking it | The end of each changed transcript |
 
 What it writes: only its own store in Claude Code's plugin data, holding
 recent session names (so a closed session keeps its title) and which

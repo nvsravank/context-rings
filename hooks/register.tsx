@@ -10,6 +10,8 @@ import {
   cacheToast,
   cacheWarning,
   capRings,
+  configDirOf,
+  cwdIn,
   fmt,
   folderOrder,
   glyph,
@@ -21,9 +23,11 @@ import {
   parseSize,
   pctOf,
   parseContextShow,
-  parseStat,
+  parsePsPids,
+  parseTasklistPids,
   parseWait,
-  projectDir,
+  SESSION_ID,
+  transcriptOf,
   ringLabel,
   ringsSvg,
   subLabel,
@@ -64,13 +68,21 @@ type Live = { pid: number; sessionId: string; cwd: string; name?: string; status
 type Known = { name?: string; cwd?: string }
 
 let configDir = ''
+let isWindows = false
+let systemRoot = 'C:\\Windows'
 const tokensByPath = new Map<string, { mtime: number; tokens: number; msgAt?: number; cacheTtl?: number; cacheAt?: number; cwd?: string }>()
 const subNames = new Map<string, string>()
 
 async function findConfigDir($: Engine): Promise<string> {
   if (configDir) return configDir
-  const { stdout } = await $.process.run(['/bin/sh', '-c', 'printf %s "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"'])
-  configDir = stdout.trim()
+  isWindows = (await $.env.get('OS')) === 'Windows_NT'
+  if (isWindows) systemRoot = (await $.env.get('SystemRoot')) || systemRoot
+  configDir = configDirOf({
+    configDir: await $.env.get('CLAUDE_CONFIG_DIR'),
+    home: await $.env.get('HOME'),
+    userProfile: await $.env.get('USERPROFILE'),
+    isWindows,
+  })
   return configDir
 }
 
@@ -96,34 +108,96 @@ async function readLive($: Engine, dir: string): Promise<Live[]> {
   }
   if (out.length === 0) return out
   // A registry file can outlive a crashed process: keep only pids still running.
-  const ps = await $.process.run(['/bin/ps', '-o', 'pid=', '-p', out.map(l => l.pid).join(',')])
-  const alive = new Set(ps.stdout.split('\n').map(s => Number(s.trim())).filter(Boolean))
-  return out.filter(l => alive.has(l.pid))
+  const alive = await runningPids($, out.map(l => l.pid)).catch(() => undefined)
+  // Can't tell (the command failed): keep them all rather than show none.
+  return alive ? out.filter(l => alive.has(l.pid)) : out
 }
 
-async function statTranscripts($: Engine, dir: string, live: readonly Live[]): Promise<TranscriptFile[]> {
-  const names = live.flatMap(l => ['-o', '-name', `${l.sessionId}.jsonl`])
-  const minutes = String(Math.ceil(RECENT_MS / 60000))
-  const { stdout } = await $.process.run([
-    '/usr/bin/find', `${dir}/projects`, '-maxdepth', '4', '-name', '*.jsonl',
-    '(', '-mmin', `-${minutes}`, ...names, ')',
-    '-exec', '/usr/bin/stat', '-f', '%m %N', '{}', '+',
-  ])
-  return parseStat(stdout)
+async function runningPids($: Engine, pids: readonly number[]): Promise<Set<number>> {
+  if (isWindows) {
+    const { stdout } = await $.process.run([`${systemRoot}\\System32\\tasklist.exe`, '/FO', 'CSV', '/NH'])
+    return parseTasklistPids(stdout)
+  }
+  const { stdout } = await $.process.run(['/bin/ps', '-o', 'pid=', '-p', pids.join(',')])
+  return parsePsPids(stdout)
 }
+
+/**
+ * Every session transcript changed in the last hour, and every live session's
+ * own; subagents' only under a session already found. Each project folder holds
+ * `<session>.jsonl` and `<session>/subagents/agent-<id>.jsonl`.
+ */
+async function statTranscripts($: Engine, dir: string, live: readonly Live[], now: number): Promise<TranscriptFile[]> {
+  const liveIds = new Set(live.map(l => l.sessionId))
+  const projects = await $.fs.list(`${dir}/projects`).catch(() => [])
+  const out: TranscriptFile[] = []
+  for (const project of projects) {
+    if (project.kind !== 'dir') continue
+    const base = `${dir}/projects/${project.name}`
+    const entries = await $.fs.list(base).catch(() => [])
+    const found = new Set<string>()
+    for (const e of entries) {
+      if (e.kind !== 'file' || !e.name.endsWith('.jsonl')) continue
+      const f = transcriptOf(`${base}/${e.name}`, e.mtimeMs)
+      if (!f || (now - e.mtimeMs > RECENT_MS && !liveIds.has(f.sessionId))) continue
+      out.push(f)
+      found.add(f.sessionId)
+    }
+    for (const e of entries) {
+      if (e.kind !== 'dir' || !SESSION_ID.test(e.name) || !(found.has(e.name) || liveIds.has(e.name))) continue
+      const subDir = `${base}/${e.name}/subagents`
+      for (const s of await $.fs.list(subDir).catch(() => [])) {
+        if (s.kind !== 'file' || !s.name.endsWith('.jsonl') || now - s.mtimeMs > RECENT_MS) continue
+        const f = transcriptOf(`${subDir}/${s.name}`, s.mtimeMs)
+        if (f) out.push(f)
+      }
+    }
+  }
+  return out
+}
+
+/** Each file's last TAIL_BYTES: `tail` on macOS and Linux, PowerShell on Windows. */
+async function readTails($: Engine, paths: readonly string[]): Promise<Map<string, string>> {
+  if (!isWindows) {
+    const { stdout } = await $.process.run(['/usr/bin/tail', '-c', String(TAIL_BYTES), ...paths])
+    return splitTail(stdout, paths)
+  }
+  const { stdout } = await $.process.run(
+    [`${systemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`, '-NoProfile', '-NonInteractive', '-Command', WINDOWS_TAIL],
+    { env: { CONTEXT_RINGS_BYTES: String(TAIL_BYTES), CONTEXT_RINGS_PATHS: paths.join('|') } },
+  )
+  return splitTail(stdout, paths, true)
+}
+
+// Reads each path's end without locking it (Claude Code may be writing), headed like tail's.
+const WINDOWS_TAIL = [
+  '[Console]::OutputEncoding = [Text.Encoding]::UTF8',
+  '$n = [int64]$env:CONTEXT_RINGS_BYTES',
+  "foreach ($p in $env:CONTEXT_RINGS_PATHS -split '\\|') {",
+  "  $f = [IO.File]::Open($p, 'Open', 'Read', 'ReadWrite, Delete')",
+  '  try {',
+  '    $start = [Math]::Max([int64]0, $f.Length - $n)',
+  "    [void]$f.Seek($start, 'Begin')",
+  '    $b = New-Object byte[] ($f.Length - $start)',
+  '    $r = 0',
+  '    while ($r -lt $b.Length) { $k = $f.Read($b, $r, $b.Length - $r); if ($k -le 0) { break }; $r += $k }',
+  '    [Console]::Out.Write("==> $p <==`n")',
+  '    [Console]::Out.Write([Text.Encoding]::UTF8.GetString($b, 0, $r))',
+  '    [Console]::Out.Write("`n")',
+  '  } finally { $f.Close() }',
+  '}',
+].join('\n')
 
 async function readTokens($: Engine, files: readonly TranscriptFile[]) {
   const stale = files.filter(f => tokensByPath.get(f.path)?.mtime !== f.mtime)
   for (let i = 0; i < stale.length; i += TAIL_BATCH) {
     const batch = stale.slice(i, i + TAIL_BATCH)
-    const paths = batch.map(f => f.path)
-    const { stdout } = await $.process.run(['/usr/bin/tail', '-c', String(TAIL_BYTES), ...paths])
-    const texts = splitTail(stdout, paths)
+    const texts = await readTails($, batch.map(f => f.path))
     for (const f of batch) {
       const text = texts.get(f.path) ?? ''
       const before = tokensByPath.get(f.path)
       const cache = cacheInfo(text)
-      const cwd = /"cwd":"([^"]+)"/.exec(text)?.[1]
+      const cwd = cwdIn(text)
       tokensByPath.set(f.path, {
         mtime: f.mtime,
         tokens: lastContextTokens(text) ?? before?.tokens ?? 0,
@@ -196,7 +270,7 @@ async function refresh($: Engine) {
   const now = await $.clock.now()
   const currentId = await $.session.id()
   const live = await readLive($, dir)
-  const files = await statTranscripts($, dir, live)
+  const files = await statTranscripts($, dir, live, now)
   await readTokens($, files)
 
   const known = ((await $.store.get('known')) ?? {}) as Record<string, Known>

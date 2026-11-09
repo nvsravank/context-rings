@@ -1,7 +1,7 @@
 {
   "name": "context-rings",
   "displayName": "Context Rings",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "A ring per active session above the prompt, filled by how much of its context window is used; newest activity first, hover for the name",
   "author": {
     "name": "Sravan",

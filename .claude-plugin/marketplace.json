@@ -1,5 +1,6 @@
 {
   "name": "context-rings",
   "owner": { "name": "Sravan" },
+  "description": "Context Rings: a ring per Claude Code session showing how full its context window is, on macOS, Linux and Windows",
   "plugins": [{ "name": "context-rings", "source": "./" }]
 }
